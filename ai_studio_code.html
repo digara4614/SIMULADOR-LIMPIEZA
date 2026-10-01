@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Simulador de Limpieza Hiperrealista</title>
+    <style>
+        :root {
+            --ui-bg: rgba(0, 0, 0, 0.8);
+            --ui-text: #fff;
+            --ui-accent: #00ffcc;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #111;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            touch-action: none; /* Evita recargar al arrastrar en móviles */
+        }
+
+        /* Interfaz de usuario */
+        #ui-bar {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 60px;
+            background: var(--ui-bg);
+            color: var(--ui-text);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 20px;
+            box-sizing: border-box;
+            z-index: 10;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+
+        .ui-section { display: flex; flex-direction: column; }
+        .ui-title { font-size: 12px; color: #aaa; text-transform: uppercase; letter-spacing: 1px;}
+        .ui-value { font-size: 18px; font-weight: bold; color: var(--ui-accent); }
+
+        /* Contenedor del sándwich de capas */
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* Estilo base para todos los canvas */
+        canvas {
+            position: absolute;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            /* Los punteros cambian por JS, pero definimos un fallback */
+            cursor: crosshair; 
+        }
+
+        /* Pantalla de carga */
+        #loading {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: #111;
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 999;
+            font-size: 24px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading">Cargando recursos...</div>
+
+    <div id="ui-bar">
+        <div class="ui-section">
+            <span class="ui-title">Fase Actual</span>
+            <span class="ui-value" id="fase-texto">1. Aspirar Basura</span>
+        </div>
+        <div class="ui-section">
+            <span class="ui-title">Herramienta</span>
+            <span class="ui-value" id="herramienta-texto">🧹 Aspiradora</span>
+        </div>
+        <div class="ui-section" style="text-align: right;">
+            <span class="ui-title">Progreso</span>
+            <span class="ui-value" id="progreso-texto">0%</span>
+        </div>
+    </div>
+
+    <div id="game-container">
+        <!-- CAPA 1: Limpio (Fondo) -->
+        <canvas id="capa1-limpio" style="z-index: 1;"></canvas>
+        
+        <!-- CAPA 2: Mojado (Borrar para revelar capa 1) -->
+        <canvas id="capa2-mojado" style="z-index: 2;"></canvas>
+        
+        <!-- CAPA 3: Polvo (Borrar para revelar capa 2) -->
+        <canvas id="capa3-polvo" style="z-index: 3;"></canvas>
+        
+        <!-- CAPA 4: Basura Interactiva (Sprites) -->
+        <canvas id="capa4-basura" style="z-index: 4;"></canvas>
+    </div>
+
+<script>
+/**
+ * SIMULADOR DE LIMPIEZA - LÓGICA PRINCIPAL
+ */
+
+// Dimensiones de trabajo interno (Resolución estándar para mantener rendimiento)
+const GAME_WIDTH = 1280;
+const GAME_HEIGHT = 720;
+
+// Variables de estado
+let faseActual = 1; 
+let isDrawing = false;
+let basuraItems = [];
+let lastProgressCheck = 0;
+
+// Nombres de archivos
+const IMAGES = {
+    limpio: 'sofa-limpio.jpg',
+    mojado: 'sofa-mojado.jpg',
+    polvo: 'sofa-polvo.jpg',
+    sprites: 'elementos-suciedad.png'
+};
+
+const loadedImages = {};
+
+// Referencias DOM
+const canvases = {
+    limpio: document.getElementById('capa1-limpio'),
+    mojado: document.getElementById('capa2-mojado'),
+    polvo: document.getElementById('capa3-polvo'),
+    basura: document.getElementById('capa4-basura')
+};
+const ctxs = {};
+
+// UI Refs
+const uiFase = document.getElementById('fase-texto');
+const uiHerramienta = document.getElementById('herramienta-texto');
+const uiProgreso = document.getElementById('progreso-texto');
+
+// Iniciar aplicación
+window.onload = () => {
+    preloadImages().then(initGame).catch(err => {
+        document.getElementById('loading').innerHTML = "Error al cargar imágenes. Comprueba los nombres de archivo.<br>" + err;
+    });
+};
+
+// 1. Cargador de imágenes
+function preloadImages() {
+    let promises = Object.keys(IMAGES).map(key => {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                loadedImages[key] = img;
+                resolve();
+            };
+            img.onerror = () => reject(`No se encuentra ${IMAGES[key]}`);
+            img.src = IMAGES[key];
+        });
+    });
+    return Promise.all(promises);
+}
+
+// 2. Inicialización del juego
+function initGame() {
+    document.getElementById('loading').style.display = 'none';
+
+    // Configurar todos los canvas a la resolución base
+    for (let key in canvases) {
+        canvases[key].width = GAME_WIDTH;
+        canvases[key].height = GAME_HEIGHT;
+        ctxs[key] = canvases[key].getContext('2d', { willReadFrequently: true });
+    }
+
+    // Dibujar imágenes base en sus capas
+    ctxs.limpio.drawImage(loadedImages.limpio, 0, 0, GAME_WIDTH, GAME_HEIGHT);
+    ctxs.mojado.drawImage(loadedImages.mojado, 0, 0, GAME_WIDTH, GAME_HEIGHT);
+    ctxs.polvo.drawImage(loadedImages.polvo, 0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+    // Preparar Fase 1 (Basura)
+    generarBasura();
+    dibujarBasura();
+
+    // Eventos de interacción (Soporte Mouse y Touch)
+    const capaSuperior = canvases.basura;
+    
+    capaSuperior.addEventListener('pointerdown', (e) => {
+        isDrawing = true;
+        interactuar(e);
+    });
+    
+    capaSuperior.addEventListener('pointermove', (e) => {
+        if (!isDrawing && faseActual > 1) return; // En fase 1 puedes aspirar al pasar por encima, en 2/3 hay que pulsar
+        if (faseActual === 1) interactuar(e); // Hover vacuum
+        else interactuar(e); // Arrastrar para limpiar
+    });
+    
+    window.addEventListener('pointerup', () => isDrawing = false);
+    
+    actualizarUI();
+}
+
+// 3. Generar objetos de basura para la Fase 1
+function generarBasura() {
+    /* 
+       AQUÍ DEFINIMOS LAS ZONAS DE RECORTE (x, y, ancho, alto) de tu hoja 'elementos-suciedad.png'
+       *Nota: Como no sé en qué píxel exacto está la lata, pongo medidas aproximadas.
+       Ajusta estos valores según la posición real en tu PNG.
+    */
+    const cortesSprite = [
+        { sx: 480, sy: 830, sw: 100, sh: 60, tipo: 'lata' }, // Ejemplo Lata
+        { sx: 250, sy: 830, sw: 50, sh: 20, tipo: 'colilla' }, // Ejemplo Colilla 1
+        { sx: 340, sy: 830, sw: 50, sh: 20, tipo: 'colilla' }  // Ejemplo Colilla 2
+    ];
+
+    // Esparcir 15 elementos aleatorios por la pantalla (principalmente zona sofá)
+    for (let i = 0; i < 15; i++) {
+        const corte = cortesSprite[Math.floor(Math.random() * cortesSprite.length)];
+        basuraItems.push({
+            x: Math.random() * (GAME_WIDTH - 200) + 100, // Evitar bordes
+            y: Math.random() * (GAME_HEIGHT - 300) + 200, // Zona del sofá
+            corte: corte,
+            recolectado: false
+        });
+    }
+}
+
+// 4. Dibujar basura eliminando el fondo blanco (Chroma Key)
+function dibujarBasura() {
+    ctxs.basura.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    let itemsRestantes = 0;
+
+    basuraItems.forEach(item => {
+        if (!item.recolectado) {
+            itemsRestantes++;
+            // Dibujar el trozo de la hoja de sprites
+            ctxs.basura.drawImage(
+                loadedImages.sprites,
+                item.corte.sx, item.corte.sy, item.corte.sw, item.corte.sh,
+                item.x, item.y, item.corte.sw * 1.5, item.corte.sh * 1.5 // Escalar un poco
+            );
+        }
+    });
+
+    // Eliminar fondo blanco (Hacer el blanco transparente)
+    const imgData = ctxs.basura.getImageData(0, 0, GAME_WIDTH, GAME_HEIGHT);
+    const data = imgData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        // Si el píxel es muy claro (blanco o casi blanco de tu PNG), lo hacemos transparente
+        if (data[i] > 230 && data[i+1] > 230 && data[i+2] > 230) {
+            data[i+3] = 0; // Alpha a 0
+        }
+    }
+    ctxs.basura.putImageData(imgData, 0, 0);
+
+    // Calcular progreso de Fase 1
+    let progreso = ((15 - itemsRestantes) / 15) * 100;
+    uiProgreso.innerText = Math.round(progreso) + '%';
+
+    if (itemsRestantes === 0 && faseActual === 1) {
+        avanzarFase();
+    }
+}
+
+// 5. Motor de Interacción principal (Traducir puntero a canvas)
+function interactuar(e) {
+    const rect = canvases.basura.getBoundingClientRect();
+    // Calcular escala real por si la pantalla es más pequeña
+    const scaleX = GAME_WIDTH / rect.width;
+    const scaleY = GAME_HEIGHT / rect.height;
+    
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+
+    if (faseActual === 1) {
+        // Fase 1: Absorber basura (Colisión por distancia)
+        const radioAspiradora = 60;
+        let cambiado = false;
+        basuraItems.forEach(item => {
+            if (!item.recolectado) {
+                // Centro del objeto aprox
+                const cx = item.x + (item.corte.sw * 1.5) / 2;
+                const cy = item.y + (item.corte.sh * 1.5) / 2;
+                const dist = Math.hypot(cx - x, cy - y);
+                if (dist < radioAspiradora) {
+                    item.recolectado = true;
+                    cambiado = true;
+                }
+            }
+        });
+        if (cambiado) dibujarBasura();
+
+    } else if (faseActual === 2 && isDrawing) {
+        // Fase 2: Borrar Polvo (Capa 3)
+        borrarCapa(ctxs.polvo, x, y, 70); // Radio pincel 70
+        verificarProgresoCanvas(ctxs.polvo);
+
+    } else if (faseActual === 3 && isDrawing) {
+        // Fase 3: Borrar Agua (Capa 2)
+        borrarCapa(ctxs.mojado, x, y, 100); // Radio pincel 100
+        verificarProgresoCanvas(ctxs.mojado);
+    }
+}
+
+// 6. Efecto "Rasca y Gana"
+function borrarCapa(ctx, x, y, radius) {
+    ctx.globalCompositeOperation = 'destination-out';
+    
+    // Gradiente radial para un borrado suave (efecto hiperrealista)
+    let gradient = ctx.createRadialGradient(x, y, radius/4, x, y, radius);
+    gradient.addColorStop(0, 'rgba(0,0,0,1)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+// 7. Calcular porcentaje de borrado de un canvas (Rendimiento optimizado)
+function verificarProgresoCanvas(ctx) {
+    let now = Date.now();
+    // Solo verificar cada 250ms para no saturar el móvil
+    if (now - lastProgressCheck < 250) return;
+    lastProgressCheck = now;
+
+    const imgData = ctx.getImageData(0, 0, GAME_WIDTH, GAME_HEIGHT).data;
+    let transparentPixels = 0;
+    let totalPixelsCheck = 0;
+
+    // Saltar píxeles de 20 en 20 para calcular más rápido
+    const step = 4 * 20; 
+    for (let i = 3; i < imgData.length; i += step) { // Solo miramos canal Alpha [i=3]
+        totalPixelsCheck++;
+        if (imgData[i] < 10) transparentPixels++;
+    }
+
+    let progreso = (transparentPixels / totalPixelsCheck) * 100;
+    uiProgreso.innerText = Math.min(Math.round(progreso), 100) + '%';
+
+    // Si hemos limpiado el 95% de la pantalla, damos la fase por superada
+    if (progreso > 95) {
+        avanzarFase();
+    }
+}
+
+// 8. Control de Fases y UI
+function avanzarFase() {
+    if (faseActual === 1) {
+        faseActual = 2;
+        // Ocultar capa de basura y hacer que los eventos pasen a la de polvo
+        canvases.basura.style.pointerEvents = 'none';
+        canvases.polvo.style.pointerEvents = 'auto';
+        canvases.mojado.style.pointerEvents = 'none';
+    } 
+    else if (faseActual === 2) {
+        faseActual = 3;
+        // Ocultar polvo totalmente para que no queden restos visuales
+        ctxs.polvo.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        canvases.polvo.style.pointerEvents = 'none';
+        canvases.mojado.style.pointerEvents = 'auto';
+    }
+    else if (faseActual === 3) {
+        faseActual = 4;
+        ctxs.mojado.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+        uiFase.innerText = "¡NIVEL COMPLETADO!";
+        uiHerramienta.innerText = "✨ Impecable";
+        uiProgreso.innerText = "100%";
+        document.body.style.cursor = 'default';
+        return;
+    }
+    actualizarUI();
+}
+
+function actualizarUI() {
+    if (faseActual === 1) {
+        uiFase.innerText = "1. Eliminar Basura";
+        uiHerramienta.innerText = "🧲 Tubo Aspiradora";
+        document.body.style.cursor = "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 32 32\"><circle cx=\"16\" cy=\"16\" r=\"12\" fill=\"none\" stroke=\"%23FFF\" stroke-width=\"4\"/><circle cx=\"16\" cy=\"16\" r=\"4\" fill=\"%2300ffcc\"/></svg>') 16 16, crosshair";
+    } 
+    else if (faseActual === 2) {
+        uiFase.innerText = "2. Desincrustar Polvo";
+        uiHerramienta.innerText = "🔫 Agua a Presión";
+        uiProgreso.innerText = "0%";
+        document.body.style.cursor = "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 32 32\"><path d=\"M16 2L2 28L16 22L30 28Z\" fill=\"%2300aaff\" stroke=\"white\" stroke-width=\"2\"/></svg>') 16 2, crosshair";
+    } 
+    else if (faseActual === 3) {
+        uiFase.innerText = "3. Secado y Brillo";
+        uiHerramienta.innerText = "💨 Vaporeta / Fregona";
+        uiProgreso.innerText = "0%";
+        document.body.style.cursor = "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"32\" height=\"32\" viewBox=\"0 0 32 32\"><rect x=\"4\" y=\"12\" width=\"24\" height=\"8\" fill=\"white\" rx=\"4\"/><path d=\"M12 20v8m8-8v8\" stroke=\"white\" stroke-width=\"3\"/></svg>') 16 16, crosshair";
+    }
+}
+</script>
+</body>
+</html>
